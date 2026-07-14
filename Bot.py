@@ -4,120 +4,74 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import time
-import random
 
-def setup_driver(headless=True):
+def get_google_redirect_url(keyword, target_landing_url):
+    """
+    Returns the Google redirect URL (the one with /url?q=...&ved=...)
+    that, when clicked, counts as an organic click in GSC.
+    """
     options = Options()
-    
-    # --- Required for Colab / Linux environments ---
+    options.add_argument('--headless')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
-    if headless:
-        options.add_argument('--headless')
-    options.binary_location = '/usr/bin/chromium-browser'  # change if needed
-
-    # --- Anti-detection (hide automation) ---
-    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
+    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0')
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
 
-    driver = webdriver.Chrome(
-        executable_path='/usr/bin/chromedriver',  # change if needed
-        options=options
-    )
-    
-    # Remove webdriver fingerprint
+    driver = webdriver.Chrome(options=options)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    
-    # Page load strategy: 'eager' speeds up loading (don't wait for all resources)
-    driver.execute_cdp_cmd('Page.setLifecycleEventsEnabled', {'enabled': True})
-    # Alternatively, set the page load strategy via capabilities (if using ChromeOptions)
-    # options.set_capability('pageLoadStrategy', 'eager')
-    
-    return driver
 
-def search_and_click(keyword, target_url=None, visits=1, headless=True):
-    """
-    Performs a Google search and clicks the target URL (or the first organic result).
-    
-    Args:
-        keyword (str): Search term.
-        target_url (str, optional): If provided, only clicks a result that contains
-                                    this substring. Otherwise clicks the first link.
-        visits (int): Number of times to repeat.
-        headless (bool): Run browser in headless mode (faster).
-    """
-    for i in range(visits):
-        driver = None
+    try:
+        driver.get("https://www.google.com")
+        # Accept cookies if needed
         try:
-            driver = setup_driver(headless=headless)
-            
-            # Go to Google
-            driver.get("https://www.google.com")
-            # Accept cookies if the popup appears (quick)
-            try:
-                WebDriverWait(driver, 3).until(
-                    EC.element_to_be_clickable((By.XPATH, '//*[@id="L2AGLb"]'))
-                ).click()
-            except:
-                pass
-            
-            # Type search and submit
-            search_box = WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.NAME, "q"))
-            )
-            search_box.clear()
-            search_box.send_keys(keyword)
-            search_box.send_keys(Keys.RETURN)
-            
-            # Wait for results to appear (just enough)
-            WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.ID, "search"))
-            )
-            
-            # Find the link to click
-            if target_url:
-                # Find a result containing the target URL
-                links = driver.find_elements(By.XPATH, "//a[contains(@href, '{}')]".format(target_url))
-                if links:
-                    link = links[0]
-                else:
-                    print(f"⚠️ Target '{target_url}' not found, using first result.")
-                    link = driver.find_element(By.XPATH, "//div[@class='yuRUbf']/a")
-            else:
-                # First organic result (modern Google)
-                try:
-                    link = driver.find_element(By.XPATH, "//div[@class='yuRUbf']/a")
-                except:
-                    link = driver.find_element(By.XPATH, "//h3/ancestor::a")
-            
-            href = link.get_attribute("href")
-            print(f"Visit {i+1}: Clicking {href}")
-            
-            # Click the link
-            link.click()
-            
-            # Optional: wait a short moment for the page to start loading (referrer sent)
-            time.sleep(1)  # you can remove or adjust
-            
-            print(f"✅ Organic click generated for visit {i+1}")
-            
-        except Exception as e:
-            print(f"❌ Error on visit {i+1}: {e}")
-        finally:
-            if driver:
-                driver.quit()
-            # Small gap between visits (can be reduced or removed)
-            if i < visits - 1:
-                time.sleep(random.uniform(1, 3))
+            WebDriverWait(driver, 3).until(
+                EC.element_to_be_clickable((By.XPATH, '//*[@id="L2AGLb"]'))
+            ).click()
+        except:
+            pass
+
+        search_box = WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.NAME, "q"))
+        )
+        search_box.send_keys(keyword)
+        search_box.send_keys(Keys.RETURN)
+
+        # Wait for results
+        WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.ID, "search"))
+        )
+
+        # Find the result link that points to your landing page
+        # We look for any <a> whose href contains the landing URL
+        link_elements = driver.find_elements(By.XPATH, f"//a[contains(@href, '{target_landing_url}')]")
+        if not link_elements:
+            # If not found, take the first organic result
+            link_elements = driver.find_elements(By.XPATH, "//div[@class='yuRUbf']/a")
+            if not link_elements:
+                link_elements = driver.find_elements(By.XPATH, "//h3/ancestor::a")
+
+        if not link_elements:
+            raise RuntimeError("No result link found.")
+
+        # The href is the Google redirect URL (starts with /url?q=...)
+        redirect_url = link_elements[0].get_attribute("href")
+        # If it's relative, prepend domain
+        if redirect_url.startswith("/url?"):
+            redirect_url = "https://www.google.com" + redirect_url
+
+        print(f"✅ Generated redirect URL:\n{redirect_url}")
+        return redirect_url
+
+    finally:
+        driver.quit()
 
 # ========== CONFIGURE ==========
 KEYWORD = "your search keyword"
-TARGET_SITE = "yoursite.com"   # optional: if you want a specific landing page
-NUM_VISITS = 5
-HEADLESS = True               # Set False to see the browser
+LANDING_PAGE = "yoursite.com"   # e.g., "example.com/product"
 
-search_and_click(KEYWORD, TARGET_SITE, NUM_VISITS, HEADLESS)
+if __name__ == "__main__":
+    url = get_google_redirect_url(KEYWORD, LANDING_PAGE)
+    # Now you can copy this URL and use it in your Facebook ad.
